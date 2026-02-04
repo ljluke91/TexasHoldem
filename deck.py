@@ -10,17 +10,9 @@ class Card:
 
     # Full display, for hole cards
     def __str__(self):
-        return f"{self.rank} of {self.suit}"
+        return f"{self.rank}{self.suit}"
 
-    # Short display, for board
-    def short(self):
-        suit_abbr = {
-            "Hearts": "h",
-            "Diamonds": "d",
-            "Clubs": "c",
-            "Spades": "s"
-        }
-        return f"{self.rank}{suit_abbr[self.suit]}"
+    
 
 # -------------------------------
 # Class representing a full deck
@@ -29,7 +21,7 @@ class Deck:
     def __init__(self):
         self.cards = []  # List to hold all 52 cards
 
-        suits = ["Hearts", "Diamonds", "Clubs", "Spades"]
+        suits = ["♥", "♦", "♣", "♠"]
         ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
 
         # Build the deck
