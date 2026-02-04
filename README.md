@@ -1,0 +1,1 @@
+The purpose of this project is to learn programming from a very beginner. Learning python, my first project is going to be to build a fully functional poker game, playable in discord between players, or versus AI. I'm complely new to this!
