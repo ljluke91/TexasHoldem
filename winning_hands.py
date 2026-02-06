@@ -21,10 +21,16 @@ def best_hand_name(cards):
     # Count suits
     suit_counts = {}
     rank_counts = {}
+    suits = {}
     for card in cards:
         rank = card.rank
         rank_counts[rank] = rank_counts.get(rank, 0) + 1
+        # grouping cards by suit (for straight flush)
+        suits.setdefault(card.suit, []).append(card)
+    #debugging - remove later
     print(rank_counts)
+  
+
 
     values = []
     for card in cards:
@@ -44,6 +50,28 @@ def best_hand_name(cards):
     ## Defining checks for hand ranks
 
         counts = list(rank_counts.values())
+
+    # Check for straight flush / royal flush
+    for suit, suited_cards in suits.items():
+        if len(suited_cards) >= 5:
+            suited_values = sorted(set(RANK_TO_VALUE[c.rank] for c in suited_cards))
+
+            # Ace to be high or low in straight flushes
+            if 14 in suited_values:
+                suited_values.append(1)
+                suited_values = sorted(set(suited_values))
+
+            run = 1
+            for i in range(1, len(suited_values)):
+                if suited_values[i] == suited_values[i - 1] + 1:
+                    run += 1
+                    if run >= 5:
+                        # Royal flush is specifically 10-J-Q-K-A
+                        if {10, 11, 12, 13, 14}.issubset(set(suited_values)):
+                            return "a royal flush"
+                        return "a straight flush"
+                else:
+                    run = 1
 
     # Check for four of a kind
     if 4 in counts:
