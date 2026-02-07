@@ -97,12 +97,55 @@ def best_hand_name(cards):
     # Check for 3 of a kind
     if 3 in counts:
         return "three of a kind"
-    # Check for two pair
-    if counts.count(2) == 2:
-        return "two pair"
-    #  Check for one pair
-    if 2 in counts:
-        return "one pair"
+    # Check for two pair (handle cases with 2 or more pairs — pick top two)
+    if counts.count(2) >= 2:
+        # Find ranks that form pairs, sort high->low and take top two
+        pair_ranks = sorted(
+            [rank for rank, count in rank_counts.items() if count == 2],
+            key=lambda r: RANK_TO_VALUE[r],
+            reverse=True,
+        )[:2]
+
+        top_pair_rank, second_pair_rank = pair_ranks[0], pair_ranks[1]
+
+        # Collect the actual Card objects for each pair (2 cards each)
+        top_pair_cards = [c for c in cards if c.rank == top_pair_rank][:2]
+        second_pair_cards = [c for c in cards if c.rank == second_pair_rank][:2]
+
+        # Find the kicker: highest card that isn't in either pair rank
+        remaining = [c for c in cards if c.rank not in {top_pair_rank, second_pair_rank}]
+        kicker_card = None
+        if remaining:
+            kicker_card = max(remaining, key=lambda c: RANK_TO_VALUE[c.rank])
+
+        best_hand = top_pair_cards + second_pair_cards + ([kicker_card] if kicker_card else [])
+
+        kicker_text = kicker_card.rank if kicker_card else "none"
+        return f"two pair - {top_pair_rank}{top_pair_rank} and {second_pair_rank}{second_pair_rank} with a {kicker_text} kicker"
+    
+    # Check for one pair
+    if counts.count(2) == 1:
+        # Find which rank makes the pair
+        pair_ranks = [rank for rank, count in rank_counts.items() if count == 2]
+        # Sort by highest pair
+        pair_ranks.sort(key=lambda r: RANK_TO_VALUE[r], reverse=True)
+
+        top_pair_rank = pair_ranks[0]
+
+        # Collect the actual Card objects for the pair
+        top_pair_cards = [c for c in cards if c.rank == top_pair_rank][:2]
+
+        # Find the top 3 kickers (highest cards that aren't the pair rank)
+        kickers = sorted(
+            [c for c in cards if c.rank not in {top_pair_rank}],
+            key=lambda c: RANK_TO_VALUE[c.rank],
+            reverse=True
+        )[:3]
+
+        best_hand = top_pair_cards + kickers
+
+        kicker_ranks = ", ".join(k.rank for k in kickers)
+        return f"one pair - {top_pair_rank} with kickers {kicker_ranks}"
         
 
     return "High Card"
