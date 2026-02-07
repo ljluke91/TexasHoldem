@@ -2,6 +2,8 @@ from deck import Deck
 from board import Board
 from player import Player
 from winning_hands import best_hand_name
+import time
+import threading
 
 class PokerGame:
     def __init__(self, players):
@@ -26,6 +28,9 @@ class PokerGame:
         self.small_blind = 10
         self.big_blind = 20
         self.hand_count = 0  # Track which hand we're on
+        
+        # Tournament tracking
+        self.finished_players = []  # List of (player, placement) tuples
         
         # Initialize positions
         self._update_positions()
@@ -138,6 +143,14 @@ class PokerGame:
             if action == "fold":
                 player.fold()
                 print(f"{player.name} folds.")
+                # Update active_indices since player folded
+                active_indices = set(i for i, p in enumerate(self.players) if not p.is_folded)
+                
+                # Check if only one player left after fold
+                if len(self.get_active_players()) == 1:
+                    winner = self.get_active_players()[0]
+                    print(f"\n{winner.name} wins! Everyone else folded.")
+                    return winner
             elif action == "check":
                 print(f"{player.name} checks.")
             elif action == "call":
@@ -155,10 +168,11 @@ class PokerGame:
             
             # Check if all active players have acted and bets are equal
             # (accounting for all-in players — they're done betting even if betted less)
-            all_acted = all(i in players_acted for i in active_indices)
+            active_players = self.get_active_players()
+            all_acted = all(i in players_acted for i, p in enumerate(self.players) if not p.is_folded)
             bets_equal = all(
-                self.players[i].bet_this_round == self.current_bet or self.players[i].is_all_in
-                for i in active_indices
+                p.bet_this_round == self.current_bet or p.is_all_in
+                for p in active_players
             )
             
             if all_acted and bets_equal:
@@ -170,7 +184,8 @@ class PokerGame:
     
     def _get_player_action(self, player):
         """
-        Prompt the player for their action. Returns (action, amount).
+        Prompt the player for their action with a 60-second timeout. Returns (action, amount).
+        If player doesn't respond in time, they automatically fold.
         
         Args:
             player: The Player object whose turn it is
@@ -178,12 +193,44 @@ class PokerGame:
         Returns:
             Tuple of (action_string, amount_if_applicable)
         """
-        print(f"\n{player.name}'s turn. Chips: {player.chips}, Current bet to match: {self.current_bet}")
+        print(f"\n{player.name}'s turn. Chips: {player.chips}, Amount to call: {self.current_bet - player.bet_this_round} (total pot: {self.pot})")
         print(f"Your hand: {player.hand[0]} {player.hand[1]}")
         
+        # Show current hand evaluation if board has cards
+        if len(self.board.cards) > 0:
+            all_cards = player.hand + self.board.cards
+            hand_evaluation = best_hand_name(all_cards)
+            print(f"You have {hand_evaluation}")
+        
+        print(f"(You have 60 seconds to act)")
+        
+        # Use a simple input mechanism with timeout
+        user_input_container = []
+        timeout_event = threading.Event()
+        
+        def get_input():
+            try:
+                user_input = input(f"{player.name}, enter action (fold/check/call/raise <amount>): ").strip().lower()
+                user_input_container.append(user_input)
+            except:
+                user_input_container.append("")
+        
+        input_thread = threading.Thread(target=get_input, daemon=True)
+        input_thread.start()
+        input_thread.join(timeout=60)  # Wait up to 60 seconds
+        
+        if not user_input_container:
+            # If they can check, auto-check. Otherwise, auto-fold.
+            if player.bet_this_round == self.current_bet:
+                print(f"\n{player.name} took too long. Auto-checking.")
+                return ("check", 0)
+            else:
+                print(f"\n{player.name} took too long. Auto-folding.")
+                return ("fold", 0)
+        
+        user_input = user_input_container[0]
+        
         while True:
-            user_input = input(f"{player.name}, enter action (fold/check/call/raise <amount>): ").strip().lower()
-            
             if user_input == "fold":
                 return ("fold", 0)
             
@@ -193,35 +240,239 @@ class PokerGame:
                     return ("check", 0)
                 else:
                     print(f"Cannot check. You must call {self.current_bet - player.bet_this_round} or raise.")
+                    user_input = input(f"{player.name}, enter action (fold/check/call/raise <amount>): ").strip().lower()
                     continue
             
             elif user_input == "call":
                 amount_to_call = self.current_bet - player.bet_this_round
                 if amount_to_call > player.chips:
-                    print(f"Not enough chips. You can only go all-in for {player.chips}.")
-                    continue
+                    # Player doesn't have enough to fully call - they go all-in
+                    # and excess is refunded to the raiser
+                    actual_amount = player.chips
+                    excess = amount_to_call - actual_amount
+                    
+                    # Find the player who made the current bet and refund them
+                    if excess > 0:
+                        for p in self.players:
+                            if p.bet_this_round == self.current_bet and p != player:
+                                p.chips += excess
+                                self.pot -= excess
+                                break
+                    
+                    bet_placed = player.place_bet(actual_amount)
+                    self.pot += bet_placed
+                    print(f"{player.name} calls all-in for {bet_placed}. (All-in!)")
+                    return ("call", actual_amount)
                 return ("call", amount_to_call)
             
-            elif user_input.startswith("raise"):
+            elif user_input.startswith("raise") or user_input.startswith("bet"):
                 parts = user_input.split()
                 if len(parts) != 2:
-                    print("Invalid format. Use 'raise <amount>'")
+                    print("Invalid format. Use 'raise <amount>' or 'bet <amount>'")
+                    user_input = input(f"{player.name}, enter action (fold/check/call/raise <amount>): ").strip().lower()
                     continue
                 try:
-                    raise_amount = int(parts[1])
-                    if raise_amount <= self.current_bet:
-                        print(f"Raise must be more than current bet ({self.current_bet})")
+                    bet_amount = int(parts[1])
+                    min_bet = max(self.big_blind, self.current_bet + self.big_blind) if self.current_bet > 0 else self.big_blind
+                    if bet_amount < min_bet:
+                        print(f"Bet must be at least {min_bet}")
+                        user_input = input(f"{player.name}, enter action (fold/check/call/raise <amount>): ").strip().lower()
                         continue
-                    if raise_amount > player.chips + player.bet_this_round:
-                        print(f"Not enough chips. Max raise is {player.chips + player.bet_this_round}")
+                    if bet_amount > player.chips + player.bet_this_round:
+                        print(f"Not enough chips. Max bet is {player.chips + player.bet_this_round}")
+                        user_input = input(f"{player.name}, enter action (fold/check/call/raise <amount>): ").strip().lower()
                         continue
-                    return ("raise", raise_amount)
+                    return ("raise", bet_amount)
                 except ValueError:
                     print("Invalid amount. Enter a number.")
+                    user_input = input(f"{player.name}, enter action (fold/check/call/raise <amount>): ").strip().lower()
                     continue
             
             else:
                 print("Invalid action. Use fold, check, call, or raise <amount>")
+                user_input = input(f"{player.name}, enter action (fold/check/call/raise <amount>): ").strip().lower()
+    
+    def reset_bets_for_new_round(self):
+        """Reset bet trackers for all players before the next betting round (flop/turn/river)"""
+        for player in self.players:
+            player.reset_bet_for_new_round()
+        self.current_bet = 0
+    
+    def deal_flop(self):
+        """Deal the flop (3 community cards)"""
+        print("\n--- Dealing the Flop ---")
+        self.board.deal_flop(self.deck)
+        print(f"Flop: {self.board.cards[0]} {self.board.cards[1]} {self.board.cards[2]}")
+        time.sleep(3)
+    
+    def deal_turn(self):
+        """Deal the turn (4th community card)"""
+        print("\n--- Dealing the Turn ---")
+        self.board.deal_turn(self.deck)
+        print(f"Board: {' '.join(str(c) for c in self.board.cards)}")
+        time.sleep(3)
+    
+    def deal_river(self):
+        """Deal the river (5th community card)"""
+        print("\n--- Dealing the River ---")
+        self.board.deal_river(self.deck)
+        print(f"Board: {' '.join(str(c) for c in self.board.cards)}")
+        time.sleep(3)
+    
+    def show_board(self):
+        """Display all community cards"""
+        if len(self.board.cards) > 0:
+            print(f"Board: {' '.join(str(c) for c in self.board.cards)}")
+    
+    def evaluate_hands(self):
+        """
+        Evaluate all remaining (non-folded) players' hands.
+        
+        Returns:
+            Dictionary: {player: hand_name, player: hand_name, ...}
+        """
+        hands = {}
+        for player in self.get_active_players():
+            all_cards = player.hand + self.board.cards
+            hand_name = best_hand_name(all_cards)
+            hands[player] = hand_name
+        return hands
+    
+    def determine_winner(self):
+        """
+        Determine the winner based on best hand evaluation.
+        
+        Returns:
+            Player object who wins the pot
+        """
+        active = self.get_active_players()
+        if len(active) == 1:
+            return active[0]
+        
+        # Evaluate all hands and find the best
+        best_player = None
+        best_hand_rank = 0
+        
+        for player in active:
+            all_cards = player.hand + self.board.cards
+            hand_name = best_hand_name(all_cards)
+            
+            # Map hand names to rank values for comparison
+            hand_rank = self._get_hand_rank(hand_name)
+            
+            if hand_rank > best_hand_rank:
+                best_hand_rank = hand_rank
+                best_player = player
+        
+        return best_player
+    
+    def _get_hand_rank(self, hand_name):
+        """Convert hand name to numeric rank for comparison. Returns highest rank found in string."""
+        rank_map = {
+            "royal flush": 10,
+            "straight flush": 9,
+            "four of a kind": 8,
+            "full house": 7,
+            "flush": 6,
+            "straight": 5,
+            "three of a kind": 4,
+            "two pair": 3,
+            "one pair": 2,
+            "high card": 1,
+        }
+        
+        for hand_type, rank in rank_map.items():
+            if hand_type in hand_name.lower():
+                return rank
+        return 0
+    
+    def distribute_pot(self, winner):
+        """Award the pot to the winner"""
+        winner.add_chips(self.pot)
+        print(f"\n{winner.name} wins the pot of {self.pot}!")
+        print(f"{winner.name} now has {winner.chips} chips.")
+        time.sleep(20)
+    
+    def play_hand(self):
+        """
+        Play one complete hand of poker from start to finish.
+        
+        Returns:
+            The Player object who won the hand
+        """
+        self.new_hand()
+        print(f"\n{'='*60}")
+        print(f"HAND #{self.hand_count}")
+        print(f"{'='*60}")
+        
+        for player in self.players:
+            print(f"{player.name} ({player.position}): {player.chips} chips")
+        
+        print("\n--- Hole Cards Dealt ---")
+        for player in self.players:
+            if not player.is_folded:
+                print(f"{player.name}: {player.hand[0]} {player.hand[1]}")
+        
+        # Pre-flop betting
+        early_winner = self.betting_round(
+            starting_index=self.get_first_to_act_preflop(),
+            round_name="PRE-FLOP"
+        )
+        
+        if early_winner:
+            self.distribute_pot(early_winner)
+            self.rotate_dealer()
+            return early_winner
+        
+        # Post-flop betting
+        self.reset_bets_for_new_round()
+        self.deal_flop()
+        early_winner = self.betting_round(
+            starting_index=self.get_first_to_act_postflop(),
+            round_name="FLOP"
+        )
+        
+        if early_winner:
+            self.distribute_pot(early_winner)
+            self.rotate_dealer()
+            return early_winner
+        
+        # Turn betting
+        self.reset_bets_for_new_round()
+        self.deal_turn()
+        early_winner = self.betting_round(
+            starting_index=self.get_first_to_act_postflop(),
+            round_name="TURN"
+        )
+        
+        if early_winner:
+            self.distribute_pot(early_winner)
+            self.rotate_dealer()
+            return early_winner
+        
+        # River betting
+        self.reset_bets_for_new_round()
+        self.deal_river()
+        early_winner = self.betting_round(
+            starting_index=self.get_first_to_act_postflop(),
+            round_name="RIVER"
+        )
+        
+        if early_winner:
+            self.distribute_pot(early_winner)
+            self.rotate_dealer()
+            return early_winner
+        
+        # Showdown
+        print("\n--- SHOWDOWN ---")
+        hands = self.evaluate_hands()
+        for player, hand in hands.items():
+            print(f"{player.name}: {hand}")
+        
+        winner = self.determine_winner()
+        self.distribute_pot(winner)
+        self.rotate_dealer()
+        return winner
     
     def __str__(self):
         player_info = "\n".join([str(p) for p in self.players])
